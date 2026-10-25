@@ -25,21 +25,41 @@ GitHub Actions owns `pnpm-lock.yaml`.
 
 ## Trusted PR Workflow
 
-The PR caller uses `paperclipai/paperclip/.github/workflows/pr-trusted.yml@master`.
+This fork pins the upstream PR workflow to
+`d3e0f0a238ed66a05d50ab6f627eb55874f0f57e`, the source revision whose workflow
+matches this checkout. Tracking upstream `master` can run new commands against
+old source files. The pin keeps all checks in the compatible workflow, including
+the existing runner identity gate, permission limits, test matrices, and aggregate
+checks. Tests bind the caller to that exact upstream SHA and workflow digest.
+Do not replace the caller with a local relative workflow or skip missing checks.
+
+The gate rejects this fork's repository identity for AWS and selects GitHub-hosted
+runners. No AWS runner-group authorization changes with this pin. When advancing
+it, review the exact upstream workflow and source together, update the digest test,
+and verify every command and matrix group before publishing the change.
+
+Upstream uses `paperclipai/paperclip/.github/workflows/pr-trusted.yml@master`.
 The AWS runner group `paperclip-public-pr` must allow
 `paperclipai/paperclip/.github/workflows/pr-trusted.yml@refs/heads/master`.
 New workflow versions merged into master then receive runner access without a
 separate SHA allowlist update. Dependabot leaves this first-party reference on
-master.
+master upstream; this fork keeps the reference excluded from automatic updates
+so each compatibility update receives review.
 
 Keep the `.github/**` rule in `.github/CODEOWNERS` and the active master ruleset's
 code-owner review requirement enabled. This covers the caller, the trusted
 workflow, and CODEOWNERS itself. Existing administrator pull-request bypasses
 remain governed by the repository ruleset.
 
-When changing the workflow path or branch, authorize the new reference before
-updating the caller. Retain older authorized SHA references while queued runs or
-supported reruns still use them.
+For AWS runner use, authorize a new workflow reference before updating the
+caller. Retain older AWS-authorized SHA references while queued runs or supported
+reruns still use them. This fork's GitHub-hosted pin does not request AWS access.
+
+The separate dependency-review check still requires GitHub's dependency graph
+to be enabled. The commitperclip review also requires its GitHub App installation
+and `COMMITPERCLIP_KEY` repository secret. Missing repository configuration is a
+setup prerequisite; do not disable these checks or replace their credentials to
+make a workflow pass.
 
 ## Start Dev
 
