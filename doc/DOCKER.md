@@ -12,6 +12,27 @@ docker build -t paperclip-local .
 
 The Dockerfile installs common agent tools (`git`, `gh`, `curl`, `wget`, `ripgrep`, `python3`) and the Claude, Codex, and OpenCode CLIs.
 
+The runtime also installs `postgresql-client-18` from the official signed
+[PostgreSQL Apt repository](https://www.postgresql.org/download/linux/debian/).
+It includes `pg_dump` and `psql`, but does not install a PostgreSQL server.
+`PAPERCLIP_PG_DUMP_PATH` and `PAPERCLIP_PSQL_PATH` select the version 18 binaries
+under `/usr/lib/postgresql/18/bin`. Operators can override these paths.
+
+For ordinary backups without data transforms, the existing `auto` engine can
+stream `pg_dump` output directly into gzip. This avoids writing the full
+uncompressed SQL dump to the backup volume. The JavaScript fallback and retention
+policy remain unchanged. Transformed backups still use the JavaScript engine.
+A client from an older PostgreSQL major version cannot dump a newer server.
+Review the client version when upgrading the database server beyond version 18.
+
+To check the client dependency without building the application:
+
+```sh
+docker build --target postgres-client -t paperclip-postgres-client .
+docker run --rm --network none --cpus 2 --memory 3g \
+  paperclip-postgres-client /usr/lib/postgresql/18/bin/pg_dump --version
+```
+
 Build arguments:
 
 | Arg | Default | Purpose |

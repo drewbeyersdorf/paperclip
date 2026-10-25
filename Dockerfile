@@ -12,6 +12,29 @@ RUN usermod -u $USER_UID --non-unique node \
   && groupmod -g $USER_GID --non-unique node \
   && usermod -g $USER_GID -d /paperclip node
 
+# Keep database clients out of the application build stages. The runtime needs
+# pg_dump 18 for PostgreSQL 18 servers; Debian trixie's default client is older.
+# Use the PostgreSQL project's signed repository and install clients only.
+FROM base AS postgres-client
+RUN install -d /usr/share/postgresql-common/pgdg \
+  && curl --fail --silent --show-error \
+    -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+    https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+  && printf '%s\n' \
+    'Types: deb' \
+    'URIs: https://apt.postgresql.org/pub/repos/apt' \
+    'Suites: trixie-pgdg' \
+    'Components: main' \
+    'Signed-By: /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc' \
+    > /etc/apt/sources.list.d/pgdg.sources \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends postgresql-client-18 \
+  && rm -rf /var/lib/apt/lists/*
+ENV PAPERCLIP_PG_DUMP_PATH=/usr/lib/postgresql/18/bin/pg_dump \
+    PAPERCLIP_PSQL_PATH=/usr/lib/postgresql/18/bin/psql
+RUN "$PAPERCLIP_PG_DUMP_PATH" --version | grep -E '^pg_dump \(PostgreSQL\) 18\.' \
+  && "$PAPERCLIP_PSQL_PATH" --version | grep -E '^psql \(PostgreSQL\) 18\.'
+
 FROM base AS deps
 WORKDIR /app
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml .npmrc ./
@@ -144,7 +167,7 @@ RUN pnpm --filter @paperclipai/server build
 RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
 RUN rm -rf packages/paperclip-runner/runner/target
 
-FROM base AS production
+FROM postgres-client AS production
 ARG USER_UID=1000
 ARG USER_GID=1000
 # Refreshes the tool layer below when it changes (CI stamps an ISO week, so
