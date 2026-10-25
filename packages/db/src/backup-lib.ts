@@ -970,6 +970,44 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       emit("");
     }
 
+    // Add table CHECK constraints after data and routines. NOT VALID checks may
+    // have historical rows that do not satisfy the expression, while validated
+    // checks must still reject invalid transformed data during restore.
+    const allChecks = await sql.begin("read only", async (checkSql) => {
+      // Qualify user-defined functions/types in deparsed expressions, regardless
+      // of the source or restore connection's search_path. Keep this local.
+      await checkSql`SET LOCAL search_path = pg_catalog`;
+      return await checkSql<{
+        schema_name: string;
+        tablename: string;
+        constraint_name: string;
+        definition: string;
+      }[]>`
+        SELECT n.nspname AS schema_name,
+               t.relname AS tablename,
+               c.conname AS constraint_name,
+               pg_get_constraintdef(c.oid) AS definition
+        FROM pg_constraint c
+        JOIN pg_class t ON t.oid = c.conrelid
+        JOIN pg_namespace n ON n.oid = t.relnamespace
+        WHERE c.contype = 'c'
+          AND ${checkSql.unsafe(nonSystemSchemaPredicate("n.nspname"))}
+        ORDER BY n.nspname, t.relname, c.conname
+      `;
+    });
+    const checks = allChecks.filter((entry) => (
+      includedTableNames.has(tableKey(entry.schema_name, entry.tablename))
+    ));
+    if (checks.length > 0) {
+      emit("-- Check constraints");
+      for (const check of checks) {
+        emitStatement(
+          `ALTER TABLE ${quoteQualifiedName(check.schema_name, check.tablename)} ADD CONSTRAINT ${quoteIdentifier(check.constraint_name)} ${check.definition};`,
+        );
+      }
+      emit("");
+    }
+
     const allTriggers = await sql<{
       schema_name: string;
       tablename: string;

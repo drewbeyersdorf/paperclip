@@ -353,6 +353,13 @@ plugin-owned database schemas. See `doc/DEVELOPING.md` for the current
 `paperclipai db:backup` / `pnpm db:backup` commands and backup retention
 configuration.
 
+The JavaScript fallback preserves table CHECK constraints, including `NOT VALID`
+and `NO INHERIT`. It adds them after rows and functions, so historical rows under
+a `NOT VALID` check can load without validating that constraint. Validated checks
+still reject invalid rows, including rows changed by backup transforms. Tables
+whose data is excluded retain their constraints. This does not add domain type
+serialization or restore partition and inheritance relationships to the fallback.
+
 Database backups do not include non-database instance files such as local-disk
 uploads, workspace files, or the local encrypted secrets master key. Back those paths
 up separately when you need full instance disaster recovery.
