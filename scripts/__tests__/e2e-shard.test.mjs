@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -27,13 +28,18 @@ function runShard(args) {
 
 function readTrustedPrWorkflow() {
   const caller = readFileSync(prCallerWorkflow, "utf8");
-  assert.match(
-    caller,
-    /^\s+uses: paperclipai\/paperclip\/\.github\/workflows\/pr-trusted\.yml@master\s*$/m,
-    "pr.yml must call the trusted workflow from CODEOWNERS-protected master",
+  assert.equal(
+    caller.match(/^\s+uses: (\S+)\s*$/m)?.[1],
+    "paperclipai/paperclip/.github/workflows/pr-trusted.yml@d3e0f0a238ed66a05d50ab6f627eb55874f0f57e",
+    "pr.yml must use the exact reviewed upstream revision compatible with this fork",
   );
-  // Validate proposed workflow changes locally; CI executes the merged master version.
-  return readFileSync(trustedPrWorkflow, "utf8");
+  const workflow = readFileSync(trustedPrWorkflow, "utf8");
+  assert.equal(
+    createHash("sha256").update(workflow.replaceAll("\r\n", "\n")).digest("hex"),
+    "1fcbcae4a28d2445a1541a36703c40f0d7609719266bf81c1a6c185a827bf362",
+    "local workflow tests must describe the reviewed immutable upstream workflow",
+  );
+  return workflow;
 }
 
 function readWorkflowJobs(workflow) {
@@ -157,8 +163,47 @@ test("shard arguments are validated", () => {
   }
 });
 
-test("pr.yml calls the trusted PR workflow from master", () => {
+test("pr.yml calls the exact compatible immutable upstream workflow", () => {
   assert.ok(readTrustedPrWorkflow().length > 0);
+});
+
+test("the pinned workflow cannot route this fork or an invalid event to AWS", () => {
+  const workflow = readTrustedPrWorkflow();
+  const match = workflow.match(/      - name: Validate PR identity and select runner[\s\S]*?        run: \|\n([\s\S]*?)\n      - name: Select stacked PR CI scope/);
+  assert.ok(match, "expected the pinned workflow's actual identity gate");
+  const gate = match[1].split("\n").map((line) => line.replace(/^ {10}/, "")).join("\n");
+  const scratch = mkdtempSync(path.join(tmpdir(), "paperclip-fork-gate-"));
+  const output = path.join(scratch, "github-output");
+  const apiAttempt = path.join(scratch, "api-attempt");
+  // A regression must fail locally, not make a real GitHub request.
+  writeFileSync(path.join(scratch, "gh"), '#!/bin/sh\nprintf attempted > "$API_ATTEMPT"\nexit 97\n', { mode: 0o755 });
+  try {
+    const fixtures = [
+      { AWS_CI_ENABLED: "false" },
+      { EVENT_REPOSITORY: "drewbeyersdorf/paperclip" },
+      { EVENT_REPOSITORY_ID: "1" },
+      { EVENT_BASE_REPOSITORY_ID: "1" },
+      { EVENT_NAME: "pull_request_target" },
+    ];
+    for (const fixture of fixtures) {
+      writeFileSync(output, "");
+      const result = spawnSync("bash", ["-c", gate], {
+        encoding: "utf8",
+        env: {
+          ...process.env, PATH: `${scratch}${path.delimiter}${process.env.PATH}`,
+          GH_TOKEN: "", API_ATTEMPT: apiAttempt, GITHUB_OUTPUT: output,
+          AWS_CI_ENABLED: "true", EVENT_NAME: "pull_request",
+          EVENT_REPOSITORY: "paperclipai/paperclip", EVENT_REPOSITORY_ID: "1170821064",
+          EVENT_BASE_REPOSITORY_ID: "1170821064", ...fixture,
+        },
+      });
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(readFileSync(output, "utf8").trim(), "runner=ubuntu-latest");
+      assert.equal(existsSync(apiAttempt), false, "identity rejection must precede API access");
+    }
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
 });
 
 test("the trusted PR workflow keeps a stable aggregate check named e2e over the shard matrix", () => {
@@ -302,8 +347,8 @@ test("the trusted PR workflow passes the shard's spec filter to Playwright witho
 });
 
 test("the trusted PR workflow regenerates stale stacked lockfiles", () => {
-  // Validate the proposed workflow here. The caller executes the merged master
-  // workflow; edits to this workflow take effect after code-owner review and merge.
+  // Validate the reviewed workflow here. The caller executes its pinned upstream
+  // revision; updates require a matching source contract and reviewed pin change.
   const workflow = readFileSync(trustedPrWorkflow, "utf8");
   assert.match(
     workflow,
