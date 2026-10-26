@@ -81,6 +81,7 @@ function redactedDatabaseBackupWarning(warning: DatabaseBackupHealthWarning): Da
   const messages: Record<DatabaseBackupHealthWarning["code"], string> = {
     database_backup_check_failed: "Database backup health check failed.",
     database_backup_last_failure: "Database backup failure marker is present.",
+    database_backup_run_failed: "Latest database backup run failed.",
     database_backup_missing: "No recent database backup was found.",
     database_backup_stale: "Latest database backup is stale.",
   };
@@ -94,6 +95,7 @@ function redactedDatabaseBackupHealth(databaseBackup: DatabaseBackupHealthStatus
   return {
     enabled: databaseBackup.enabled,
     status: databaseBackup.status,
+    lastRun: databaseBackup.lastRun,
     warnings: databaseBackup.warnings.map(redactedDatabaseBackupWarning),
   };
 }

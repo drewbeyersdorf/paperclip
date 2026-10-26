@@ -4,6 +4,7 @@ import { basename, join, resolve } from "node:path";
 export type DatabaseBackupHealthWarningCode =
   | "database_backup_check_failed"
   | "database_backup_last_failure"
+  | "database_backup_run_failed"
   | "database_backup_missing"
   | "database_backup_stale";
 
@@ -12,11 +13,37 @@ export type DatabaseBackupHealthWarning = {
   message: string;
 };
 
+export type DatabaseBackupRunResult = {
+  trigger: "scheduled" | "manual";
+  status: "succeeded" | "failed";
+  finishedAt: string;
+};
+
+// Keep the last completed result in memory: recording an ENOSPC failure must
+// not depend on writing another file to the already-full backup volume.
+export function createDatabaseBackupRunHealth() {
+  let lastRun: DatabaseBackupRunResult | null = null;
+  return {
+    getLastRun: () => lastRun,
+    async run<T>(trigger: DatabaseBackupRunResult["trigger"], backup: () => Promise<T>): Promise<T> {
+      try {
+        const result = await backup();
+        lastRun = { trigger, status: "succeeded", finishedAt: new Date().toISOString() };
+        return result;
+      } catch (error) {
+        lastRun = { trigger, status: "failed", finishedAt: new Date().toISOString() };
+        throw error;
+      }
+    },
+  };
+}
+
 export type DatabaseBackupHealthStatus = {
   enabled: boolean;
   status: "ok" | "warning";
   backupDir: string;
   maxAgeHours: number;
+  lastRun: DatabaseBackupRunResult | null;
   latestBackup: {
     name: string;
     path: string;
@@ -39,6 +66,7 @@ export type InspectDatabaseBackupHealthOptions = {
   alertFile?: string;
   alertFiles?: string[];
   now?: Date;
+  getLastRun?: () => DatabaseBackupRunResult | null;
 };
 
 function roundHours(value: number): number {
@@ -108,6 +136,13 @@ export function inspectDatabaseBackupHealth(
   const warnings: DatabaseBackupHealthWarning[] = [];
   const now = opts.now ?? new Date();
   const maxAgeHours = Math.max(1, opts.maxAgeHours);
+  const lastRun = opts.getLastRun?.() ?? null;
+  if (lastRun?.status === "failed") {
+    warnings.push({
+      code: "database_backup_run_failed",
+      message: `Latest ${lastRun.trigger} database backup failed.`,
+    });
+  }
 
   let latestBackup: DatabaseBackupHealthStatus["latestBackup"] = null;
   let lastFailure: DatabaseBackupHealthStatus["lastFailure"] = null;
@@ -146,6 +181,7 @@ export function inspectDatabaseBackupHealth(
     status: warnings.length > 0 ? "warning" : "ok",
     backupDir: opts.backupDir,
     maxAgeHours,
+    lastRun,
     latestBackup,
     lastFailure,
     warnings,

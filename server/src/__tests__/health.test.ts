@@ -8,6 +8,7 @@ import type { Db } from "@paperclipai/db";
 import { healthRoutes } from "../routes/health.js";
 import * as devServerStatus from "../dev-server-status.js";
 import { serverVersion } from "../version.js";
+import { createDatabaseBackupRunHealth } from "../services/database-backup-health.js";
 
 const mockReadPersistedDevServerStatus = vi.hoisted(() => vi.fn());
 const testServerInfo = {
@@ -247,6 +248,46 @@ describe("GET /health", () => {
     expect(res.body.warnings).toEqual(res.body.databaseBackup.warnings);
   });
 
+  it("reports a failed backup without changing readiness or exposing its error", async () => {
+    const backupDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-health-run-"));
+    try {
+      fs.writeFileSync(path.join(backupDir, "recent.sql.gz"), "backup");
+      const monitor = createDatabaseBackupRunHealth();
+      const failure = new Error("ENOSPC: /private/backup postgresql://user:secret@host/db");
+      await expect(monitor.run("scheduled", async () => { throw failure; })).rejects.toBe(failure);
+      const db = {
+        execute: vi.fn().mockResolvedValue([{ "?column?": 1 }]),
+        select: vi.fn(() => ({ from: vi.fn(() => ({ where: vi.fn().mockResolvedValue([{ count: 1 }]) })) })),
+      } as unknown as Db;
+      const app = express();
+      app.use((req, _res, next) => {
+        (req as any).actor = { type: "none", source: "none" };
+        next();
+      });
+      app.use("/health", healthRoutes(db, {
+        deploymentMode: "authenticated",
+        deploymentExposure: "public",
+        authReady: true,
+        companyDeletionEnabled: false,
+        databaseBackupHealth: { enabled: true, backupDir, maxAgeHours: 26, getLastRun: monitor.getLastRun },
+      }));
+      const res = await request(app).get("/health");
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe("ok");
+      expect(res.body.databaseBackup).toEqual({
+        enabled: true,
+        status: "warning",
+        lastRun: { trigger: "scheduled", status: "failed", finishedAt: expect.any(String) },
+        warnings: [{ code: "database_backup_run_failed", message: "Latest database backup run failed." }],
+      });
+      expect(res.text).not.toContain("secret");
+      expect(res.text).not.toContain("/private/");
+      expect(res.text).not.toContain(backupDir);
+    } finally {
+      fs.rmSync(backupDir, { recursive: true, force: true });
+    }
+  });
+
   it("surfaces database backup failure markers in full health details", async () => {
     const backupDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-health-backups-"));
     const backupFile = path.join(backupDir, "paperclip-20260706-031702.sql.gz");
@@ -366,6 +407,7 @@ describe("GET /health", () => {
       databaseBackup: {
         enabled: true,
         status: "warning",
+        lastRun: null,
         warnings: [
           {
             code: "database_backup_stale",

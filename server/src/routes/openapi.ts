@@ -1828,6 +1828,14 @@ registry.registerPath({
             status: z.enum(["ok", "warning"]),
             backupDir: z.string().optional(),
             maxAgeHours: z.number().optional(),
+            lastRun: z
+              .object({
+                trigger: z.enum(["scheduled", "manual"]),
+                status: z.enum(["succeeded", "failed"]),
+                finishedAt: z.string().datetime(),
+              })
+              .nullable()
+              .optional(),
             latestBackup: z
               .object({
                 name: z.string(),
@@ -1851,6 +1859,7 @@ registry.registerPath({
                 code: z.enum([
                   "database_backup_check_failed",
                   "database_backup_last_failure",
+                  "database_backup_run_failed",
                   "database_backup_missing",
                   "database_backup_stale",
                 ]),

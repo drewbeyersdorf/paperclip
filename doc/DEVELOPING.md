@@ -1361,6 +1361,23 @@ Without `PAPERCLIP_DB_BACKUP_ALERT_FILE`, health checks look for
 `db-backup-to-s3.failure` in the backup directory, beside the backup directory,
 and in the default sibling `health/` directory.
 
+When automatic backups are enabled, `/api/health` also reports
+`databaseBackup.lastRun`: the trigger (`scheduled` or `manual`), completion
+status (`succeeded` or `failed`), and `finishedAt` time for the last backup run
+completed by this server process. It is `null` until the first run completes and
+resets on restart. CLI backups run in a separate process and do not update it.
+
+A failed server backup sets `databaseBackup.status` to `warning` and adds
+`database_backup_run_failed`, even when an older backup file is still fresh.
+The warning stays during a retry and clears after a successful server backup,
+including a manual run. That success does not prove the scheduler, remote copy,
+or restore process works. Existing stale-file and external-marker checks still
+apply independently. The result is kept in memory so disk-full errors do not
+prevent health reporting; raw errors remain in server logs. Public probes receive
+only the result fields and a generic warning, without backup paths or error text.
+Backup warnings do not change the top-level readiness status or HTTP response
+code. Operators must check the nested backup state separately.
+
 DB backups are not full instance filesystem backups. For full local disaster
 recovery, also back up local storage files and the local encrypted secrets key if
 those providers are enabled.
