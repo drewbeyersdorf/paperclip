@@ -5,6 +5,7 @@
 // HTTP server, so trace coverage does not depend on incidental timing.
 import { instrumentationReady, shutdownInstrumentation } from "./instrumentation.js";
 import { sentryReady, shutdownSentry, captureException } from "./sentry.js";
+import { createDatabaseBackupRunHealth } from "./services/database-backup-health.js";
 import { waitForPendingRunFailureReports } from "./services/run-failure-report.js";
 import { verifyStoppedNativeSessionForReplacement } from "./services/native-runtime/native-session-executor.js";
 import { embeddedPostgresOwnerPort } from "./embedded-postgres-owner.js";
@@ -811,6 +812,7 @@ async function startServerWithDatabaseTeardown(
     resolve(config.databaseBackupDir, "db-backup-to-s3.failure"),
     resolve(config.databaseBackupDir, "..", "db-backup-to-s3.failure"),
   ];
+  const databaseBackupRunHealth = createDatabaseBackupRunHealth();
   let databaseBackupInFlight = false;
   const runServerDatabaseBackup = async (
     trigger: InstanceDatabaseBackupTrigger,
@@ -824,51 +826,53 @@ async function startServerWithDatabaseTeardown(
       throw conflict(message);
     }
 
-    databaseBackupInFlight = true;
-    const startedAt = new Date();
-    const startedAtMs = Date.now();
-    const label = trigger === "scheduled" ? "Automatic" : "Manual";
-    try {
-      logger.info({ backupDir: config.databaseBackupDir, trigger }, `${label} database backup starting`);
-      // Read retention from Instance Settings (DB) so changes take effect without restart.
-      const generalSettings = await backupSettingsSvc.getGeneral();
-      const retention = generalSettings.backupRetention;
+    return databaseBackupRunHealth.run(trigger, async () => {
+      databaseBackupInFlight = true;
+      const startedAt = new Date();
+      const startedAtMs = Date.now();
+      const label = trigger === "scheduled" ? "Automatic" : "Manual";
+      try {
+        logger.info({ backupDir: config.databaseBackupDir, trigger }, `${label} database backup starting`);
+        // Read retention from Instance Settings (DB) so changes take effect without restart.
+        const generalSettings = await backupSettingsSvc.getGeneral();
+        const retention = generalSettings.backupRetention;
 
-      const result = await runDatabaseBackup({
-        connectionString: activeDatabaseConnectionString,
-        backupDir: config.databaseBackupDir,
-        retention,
-        filenamePrefix: "paperclip",
-      });
-      const finishedAt = new Date();
-      const response: InstanceDatabaseBackupRunResult = {
-        ...result,
-        trigger,
-        backupDir: config.databaseBackupDir,
-        retention,
-        startedAt: startedAt.toISOString(),
-        finishedAt: finishedAt.toISOString(),
-        durationMs: Date.now() - startedAtMs,
-      };
-      logger.info(
-        {
-          backupFile: result.backupFile,
-          sizeBytes: result.sizeBytes,
-          prunedCount: result.prunedCount,
+        const result = await runDatabaseBackup({
+          connectionString: activeDatabaseConnectionString,
           backupDir: config.databaseBackupDir,
           retention,
+          filenamePrefix: "paperclip",
+        });
+        const finishedAt = new Date();
+        const response: InstanceDatabaseBackupRunResult = {
+          ...result,
           trigger,
-          durationMs: response.durationMs,
-        },
-        `${label} database backup complete: ${formatDatabaseBackupResult(result)}`,
-      );
-      return response;
-    } catch (err) {
-      logger.error({ err, backupDir: config.databaseBackupDir, trigger }, `${label} database backup failed`);
-      throw err;
-    } finally {
-      databaseBackupInFlight = false;
-    }
+          backupDir: config.databaseBackupDir,
+          retention,
+          startedAt: startedAt.toISOString(),
+          finishedAt: finishedAt.toISOString(),
+          durationMs: Date.now() - startedAtMs,
+        };
+        logger.info(
+          {
+            backupFile: result.backupFile,
+            sizeBytes: result.sizeBytes,
+            prunedCount: result.prunedCount,
+            backupDir: config.databaseBackupDir,
+            retention,
+            trigger,
+            durationMs: response.durationMs,
+          },
+          `${label} database backup complete: ${formatDatabaseBackupResult(result)}`,
+        );
+        return response;
+      } catch (err) {
+        logger.error({ err, backupDir: config.databaseBackupDir, trigger }, `${label} database backup failed`);
+        throw err;
+      } finally {
+        databaseBackupInFlight = false;
+      }
+    });
   };
   const pluginWorkerManager = createPluginWorkerManager();
   const heartbeat = config.heartbeatSchedulerEnabled
@@ -902,6 +906,7 @@ async function startServerWithDatabaseTeardown(
           maxAgeHours: databaseBackupMaxAgeHours,
           alertFile: databaseBackupAlertFile,
           alertFiles: databaseBackupAlertFiles,
+          getLastRun: databaseBackupRunHealth.getLastRun,
         }
       : undefined,
     deploymentMode: config.deploymentMode,
